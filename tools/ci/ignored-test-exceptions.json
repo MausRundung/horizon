@@ -929,6 +929,14 @@
   },
   {
     "package": "horizon-launcher",
+    "target": "test:img_probe",
+    "test": "cached_png_renders",
+    "path": "launcher/tests/img_probe.rs",
+    "reason": "opens a real GPUI window and captures its frame",
+    "rationale": "Compiled only under the img-probe feature and opens a real window; explicit manual runner by-hand in tools/ci/ignored-tests/manual-horizon-launcher.txt on an interactive Windows desktop with a graphics adapter. Not selected by daily shards."
+  },
+  {
+    "package": "horizon-launcher",
     "target": "lib",
     "test": "native_mods::api::tests::wrapper_owns_holder_marker",
     "path": "launcher/src/native_mods/api.rs",

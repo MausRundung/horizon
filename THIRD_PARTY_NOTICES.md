@@ -79,6 +79,17 @@ The native renderer uses Horizon's own block-sprite arrays, pose and light packi
 development-only oracle calls the unchanged helper from the player's local artifact. No
 original classes, game shaders, textures or prepared resources are distributed here.
 
+## gpui-fast
+
+`third_party/gpui-fast` is [gpui-fast](https://github.com/longbridge/gpui-fast) 0.1.15 by
+Longbridge and the Zed Industries contributors, licensed under Apache-2.0 (its `LICENSE` is in that
+folder), with one patch: on Windows its Direct3D 11 backend draws the children of a rounded
+overflow clip through a clip mask that can evaluate to zero coverage, so the content disappears
+while the box's own background still paints (`src/fast/rounded_clip.rs`, `paint_children`). The
+patch skips the scope there and leaves the rectangular overflow mask in place, so clipped corners
+are square; `GPUI_ROUNDED_CLIPS=1` restores the original behaviour. The launcher pins the folder
+through `[patch.crates-io]`.
+
 ## wgpu-hal
 
 `third_party/wgpu-hal` is [wgpu-hal](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs

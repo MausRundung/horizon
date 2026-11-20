@@ -7,6 +7,16 @@ description = "Downloads, prepares and starts Horizon builds"
 
 [workspace]
 
+[features]
+img-probe = ["gpui/test-support", "gpui_platform/test-support"]
+
+# gpui-fast 0.1.15 with one patch (third_party/gpui-fast, THIRD_PARTY_NOTICES.md): on Direct3D 11
+# a rounded overflow clip drops the content inside it, so the launcher's icons and avatars vanish.
+# The rectangular overflow mask still applies; only the corners are square.
+# `GPUI_ROUNDED_CLIPS=1` opts back in. Drop the patch once the crate is fixed upstream.
+[patch.crates-io]
+gpui-fast = { path = "../third_party/gpui-fast" }
+
 [dependencies]
 horizon-addresses = { path = "../crates/horizon-addresses" }
 # Reads the object members out of the mods' rlibs for the API route's C link (`native_mods/api_route.rs`).
