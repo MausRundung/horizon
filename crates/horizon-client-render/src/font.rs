@@ -431,6 +431,37 @@ struct Cache {
     /// `Font.random`: picks obfuscated glyphs.
     random: horizon_core::random::LegacyRandom,
 }
+impl Font {
+    /// A copy the renderer can own while the menu bundle stays on the main thread: it
+    /// shares the baked atlas data but starts without mutable caches. Text measures only
+    /// until the real atlas is installed.
+    pub fn renderer_only(&self) -> Self {
+        Self {
+            sheets: HashMap::new(),
+            missing: self.missing,
+            white: self.white,
+            source: self.source.clone(),
+            atlas: self.atlas,
+            region: self.region,
+            metrics_only: true,
+            cache: RefCell::new(Cache {
+                sets: Vec::new(),
+                region: Region {
+                    cursor: (0, 0),
+                    row: 0,
+                    pending: Vec::new(),
+                    full: false,
+                },
+                strips: StripCache::default(),
+                unihex: HashMap::new(),
+                random: crate::random_source::create(),
+            }),
+            generation: std::cell::Cell::new(0),
+            uniform: self.uniform,
+            japanese: self.japanese,
+        }
+    }
+}
 pub struct Font {
     /// The atlas rects of every texture, by resource name: a bitmap provider's
     /// `file` may name any texture, not only one under `textures/font`.

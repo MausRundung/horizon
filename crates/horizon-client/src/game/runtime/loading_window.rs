@@ -26,6 +26,7 @@ pub(super) fn prepare_renderer_textures(
 pub(super) fn build_renderer(
     window: Arc<Window>,
     offscreen: bool,
+    prepared_for: Option<horizon_client::gfx::WindowOutput>,
     pack: &PackResources,
     gui: &UiResources,
     previous: Option<&Renderer>,
@@ -56,6 +57,7 @@ pub(super) fn build_renderer(
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
+        prepared_for,
         &assets.pixels.get(),
         assets.sprite_size,
         assets.sprite_minimum_size,
@@ -157,6 +159,7 @@ pub(super) fn loading_renderer(
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
+        None,
         &[255, 255, 255, 255],
         1,
         1,

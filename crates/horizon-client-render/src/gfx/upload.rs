@@ -324,12 +324,12 @@ impl Uploads {
     }
 }
 
-/// About how much one band stages; a large upload holds at most about two.
+/// About how much one encoder submission stages.
 const BAND: usize = 8 << 20;
 
 /// `device.create_texture_with_data(queue, desc, LayerMajor, data)`, staged a
-/// band at a time: each band is submitted, and the one before waited for, so
-/// its staging buffer is freed before the next is written.
+/// band at a time: each band is submitted and completed work is polled without
+/// waiting, so a slow upload cannot freeze the render thread.
 pub(crate) fn create_texture_with_data(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -363,9 +363,11 @@ fn create_banded(
     let mut desc = desc.clone();
     desc.usage |= wgpu::TextureUsages::COPY_DST;
     let texture = device.create_texture(&desc);
-    let (mut offset, mut staged, mut previous) = (0, 0, None);
+    let mut uploads = Uploads::with_chunk(device, band as u64);
+    let mut encoder = device.create_command_encoder(&Default::default());
+    let (mut offset, mut staged) = (0, 0);
     // The order `create_texture_with_data` reads `LayerMajor` data in.
-    for layer in 0..desc.array_layer_count() {
+    'bands: for layer in 0..desc.array_layer_count() {
         for mip in 0..desc.mip_level_count {
             let Some(size) = desc.mip_level_size(mip) else {
                 continue;
@@ -377,41 +379,34 @@ fn create_banded(
                 let rows = rows_per_band.min(size.height - y);
                 let bytes = row * rows as usize;
                 let Some(texels) = data.get(offset..offset + bytes) else {
-                    return texture;
+                    break 'bands;
                 };
-                queue.write_texture(
+                uploads.texture(
+                    &mut encoder,
                     wgpu::TexelCopyTextureInfo {
                         texture: &texture,
                         mip_level: mip,
                         origin: wgpu::Origin3d { x: 0, y, z: layer },
                         aspect: wgpu::TextureAspect::All,
                     },
+                    size.width,
+                    rows,
                     texels,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(row as u32),
-                        rows_per_image: Some(rows),
-                    },
-                    wgpu::Extent3d {
-                        width: size.width,
-                        height: rows,
-                        depth_or_array_layers: 1,
-                    },
                 );
                 (offset, staged, y) = (offset + bytes, staged + bytes, y + rows);
                 if staged >= band {
-                    let index = queue.submit([]);
-                    if let Some(earlier) = previous.replace(index) {
-                        let _ = device.poll(wgpu::PollType::Wait {
-                            submission_index: Some(earlier),
-                            timeout: None,
-                        });
-                    }
+                    uploads.finish(&encoder);
+                    queue.submit([encoder.finish()]);
+                    let _ = device.poll(wgpu::PollType::Poll);
+                    encoder = device.create_command_encoder(&Default::default());
                     staged = 0;
                 }
             }
         }
     }
+    uploads.finish(&encoder);
+    queue.submit([encoder.finish()]);
+    let _ = device.poll(wgpu::PollType::Poll);
     texture
 }
 
@@ -684,7 +679,7 @@ mod tests {
                 .sum::<u32>()
                 * 3;
             let data: Vec<u8> = (0..len).map(|i| (i * 7 + i / 251) as u8).collect();
-            // Three rows of the largest level a band: many submissions, each waited for.
+            // Three rows of the largest level a band: many submissions, polled without waiting.
             let banded = create_banded(&device, &queue, &desc, &data, 3 * edge as usize * 4);
             let whole = wgpu::util::DeviceExt::create_texture_with_data(
                 &device,

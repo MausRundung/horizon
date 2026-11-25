@@ -906,6 +906,48 @@ fn is_companion_map(root: &ResourceSource, name: &str, read_maps: bool) -> bool 
 }
 
 impl HudAtlas {
+    pub fn renderer_only(&self) -> Self {
+        Self {
+            pictures: std::sync::Mutex::default(),
+            revision: self.revision,
+            pixels: if self.packed.is_some() {
+                Vec::new()
+            } else {
+                self.pixels.clone()
+            },
+            packed: self.packed.clone(),
+            galactic_widths: self.galactic_widths,
+            width: self.width,
+            height: self.height,
+            sprites: self.sprites.clone(),
+            object_skins: self.object_skins.clone(),
+            object_skins_revision: self.object_skins_revision,
+            translucent: self.translucent.clone(),
+            flags: self.flags.clone(),
+            sprite_animations: self.sprite_animations.clone(),
+            font: self.font.renderer_only(),
+            glint: self.glint.clone(),
+            glint_armor: self.glint_armor.clone(),
+            text_shaders: crate::gfx::core_text::TextShaders {
+                gui: self.text_shaders.gui.clone(),
+                world: self.text_shaders.world.clone(),
+                see_through: self.text_shaders.see_through.clone(),
+            },
+            lines_shader: self.lines_shader.clone(),
+            sky_shader: self.sky_shader.clone(),
+            stars_shader: self.stars_shader.clone(),
+            sunrise_shader: self.sunrise_shader.clone(),
+            gui_shader: self.gui_shader.clone(),
+            lightmap_shader: self.lightmap_shader.clone(),
+            blit_shader: self.blit_shader.clone(),
+            sprite_modifiers: self.sprite_modifiers.clone(),
+            random_textures: Default::default(),
+            emissive: self.emissive.clone(),
+            blinks: Default::default(),
+            material_maps: self.material_maps.clone(),
+            white: self.white,
+        }
+    }
     /// `TextureAtlas.dumpContents` for this atlas: `dir` is `screenshots/debug`,
     /// the folder `TextureUtil.getDebugTexturePath` names.
     pub fn dump_contents(&self, dir: &Path, name: &str) -> std::io::Result<PathBuf> {

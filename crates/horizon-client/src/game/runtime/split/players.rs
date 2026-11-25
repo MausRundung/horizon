@@ -509,6 +509,7 @@ impl Split<'_> {
         guest.renderer = Some(build_renderer(
             window.clone(),
             true,
+            None,
             &guest.pack,
             &guest.gui,
             host.renderer.as_ref(),

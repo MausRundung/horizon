@@ -461,6 +461,33 @@ impl Loading {
                 match self.receiver.try_recv() {
                     Ok(LoaderMsg::Ui(gui, root)) => self.set_ui(gui, root),
                     Ok(LoaderMsg::Done(result)) => {
+                        if let Ok(loaded) = &result
+                            && self.glint_loader.is_none()
+                            && let Some(renderer) = &self.renderer
+                        {
+                            let item_renderer = loaded.pack.item_renderer.clone();
+                            let maximum = renderer.device.limits().max_texture_dimension_2d;
+                            let filtering = (
+                                self.settings.file.int("textureFiltering"),
+                                self.settings.file.int("maxAnisotropyBit"),
+                            );
+                            let spawned = horizon_guest_stack::builder()
+                                .name("Item glint atlas".into())
+                                .spawn(move || {
+                                    let _step = horizon_client::spans::startup::step(
+                                        "renderer.glint_atlas",
+                                    );
+                                    item_renderer
+                                        .prepare_glint_atlas(maximum, filtering)
+                                        .map_err(|error| error.to_string())
+                                });
+                            match spawned {
+                                Ok(loader) => self.glint_loader = Some(loader),
+                                Err(error) => log::warn!(
+                                    "Horizon: item glint atlas worker could not start: {error}"
+                                ),
+                            }
+                        }
                         self.loaded = Some(result);
                         self.delivered = true;
                         break;
@@ -1464,6 +1491,9 @@ impl Loading {
                 log::warn!("Horizon: replaced resource generation failed: {error}");
             }
         }
+        // A renderer or service set started for the replaced pack belongs to it.
+        self.renderer_loader = None;
+        self.startup_services = None;
         self.loaded = None;
         self.delivered = false;
         if let Some(handle) = self.handle.take() {
@@ -1566,6 +1596,9 @@ mod tests {
             progress: Progress::new(),
             receiver,
             loaded: None,
+            glint_loader: None,
+            renderer_loader: None,
+            startup_services: None,
             delivered: false,
             handle: None,
             shown: false,

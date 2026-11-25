@@ -7477,6 +7477,7 @@ impl Game<'_> {
         let mut renderer = build_renderer(
             window,
             self.options.offscreen,
+            None,
             &self.pack,
             &self.gui,
             None,
@@ -10585,10 +10586,19 @@ impl Game<'_> {
                         self.debug_charts.frame_times.log(elapsed.as_nanos() as i64);
                         if self.frames == 0 {
                             // The launcher times Play to this line (launcher/src/perf.rs).
+                            let (encode, wait) = self.renderer.as_ref().map_or((0, 0), |r| {
+                                (r.last_encode.as_millis(), r.last_wait.as_millis())
+                            });
                             log::info!(
-                                "Horizon: first frame after {} ms",
+                                "Horizon: first frame after {} ms (encode {encode} ms, wait {wait} ms)",
                                 self.started.elapsed().as_millis()
                             );
+                            if startup::on() {
+                                startup::counters(
+                                    "first_frame",
+                                    &[("encode_ms", encode as usize), ("wait_ms", wait as usize)],
+                                );
+                            }
                         }
                         if self.title.is_some() {
                             self.perf.title_shown();
@@ -10619,6 +10629,7 @@ impl Game<'_> {
                             self.world_frames += 1;
                         }
                         self.frames += 1;
+                        startup::counters("frame", &[]);
                         self.fps_frames += 1;
                         horizon_client::crash::debug_crash_tick();
                         if self.fps_at.elapsed() >= Duration::from_secs(1) {

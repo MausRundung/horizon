@@ -66,6 +66,13 @@ pub(super) struct Loading {
     pub(super) progress: Progress,
     pub(super) receiver: Receiver<LoaderMsg>,
     pub(super) loaded: Option<std::result::Result<Loaded, String>>,
+    /// Item glint textures decoded beside the loading screen, once the device's texture limit is known.
+    pub(super) glint_loader: Option<std::thread::JoinHandle<std::result::Result<(), String>>>,
+    /// The world renderer prepared offscreen while the loading screen keeps drawing.
+    pub(super) renderer_loader: Option<std::thread::JoinHandle<std::result::Result<Renderer, String>>>,
+    /// The audio device and the menu's language, prepared beside the renderer.
+    pub(super) startup_services:
+        Option<std::thread::JoinHandle<(Audio, horizon_client::lang::Language)>>,
     /// The loader's `Done` arrived: its channel closing afterwards is expected.
     pub(super) delivered: bool,
     pub(super) handle: Option<JoinHandle<()>>,
@@ -89,6 +96,118 @@ impl Loading {
         self.title_drawn
             || self.menu.pending.is_some()
             || self.ui_at.is_none_or(|at| at.elapsed() >= TITLE_FRAME_WAIT)
+    }
+    pub(super) fn glint_ready(&self) -> bool {
+        self.glint_loader
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+    }
+    pub(super) fn renderer_ready(&self) -> bool {
+        self.renderer_loader
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+    }
+    pub(super) fn start_renderer_loader(&mut self) -> Result<()> {
+        if self.renderer_loader.is_some()
+            || self.menu.reload_packs
+            || !self.glint_ready()
+            || !self.ready_for_handoff()
+        {
+            return Ok(());
+        }
+        let loaded = match self.loaded.take() {
+            Some(loaded) => loaded,
+            None => return Ok(()),
+        };
+        let mut loaded = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                self.loaded = Some(Err(error));
+                return Ok(());
+            }
+        };
+        let Some(window) = self.window.clone() else {
+            self.loaded = Some(Ok(loaded));
+            return Ok(());
+        };
+        let Some(gui) = &self.gui else {
+            self.loaded = Some(Ok(loaded));
+            return Ok(());
+        };
+        let renderer_gui = UiResources {
+            atlas: gui.atlas.renderer_only(),
+            panorama: gui.panorama.clone(),
+            splashes: gui.splashes.clone(),
+        };
+        let pack = loaded.pack.clone();
+        let prepared = loaded.renderer_cpu.take();
+        let settings = self.settings.clone();
+        let display = self
+            .renderer
+            .as_ref()
+            .map(|renderer| renderer.display_reading())
+            .unwrap_or_default();
+        // The loading renderer already presents to the window: the prepared one picks the
+        // same swapchain format and HDR frame.
+        let window_output = self
+            .renderer
+            .as_ref()
+            .map(horizon_client::gfx::Renderer::window_output);
+        // The sound registry (and device) and the menu's language are read off the same
+        // resources the renderer builds from; preparing them here keeps that work out of
+        // the handoff's frame.
+        let source = loaded.pack.source.clone();
+        let sound_device = self.settings.sound_device.clone();
+        let audio_on = self
+            .options
+            .as_ref()
+            .is_some_and(|options| options.execution_role.is_client());
+        let code = horizon_client::lang::code();
+        match std::thread::Builder::new()
+            .name("Startup services".into())
+            .spawn(move || {
+                let _step = startup::step("handoff.services");
+                let audio = if audio_on {
+                    Audio::with_device(&source, &sound_device)
+                } else {
+                    Audio::silent(&source)
+                };
+                let language = horizon_client::lang::Language::load(&[&source], &code);
+                (audio, language)
+            }) {
+            Ok(loader) => self.startup_services = Some(loader),
+            Err(error) => log::warn!("Horizon: startup services worker could not start: {error}"),
+        }
+        let spawned = horizon_guest_stack::builder()
+            .name("World renderer".into())
+            .spawn(move || {
+                build_renderer(
+                    window,
+                    true,
+                    window_output,
+                    &pack,
+                    &renderer_gui,
+                    None,
+                    prepared,
+                    settings.horizon.effective_api(),
+                    settings.horizon.translucent_batching,
+                    settings.vsync,
+                    &settings.horizon,
+                    shader_packs::picked_pack_shape(&settings),
+                    display,
+                    (
+                        settings.file.int("textureFiltering"),
+                        settings.file.int("maxAnisotropyBit"),
+                    ),
+                )
+                .map_err(|error| error.to_string())
+            });
+        self.loaded = Some(Ok(loaded));
+        match spawned {
+            Ok(loader) => self.renderer_loader = Some(loader),
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
     }
     pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -303,6 +422,7 @@ impl Loading {
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
         }
+        startup::counters("frame", &[]);
         if !self.shown {
             self.shown = true;
             startup::mark("loading_screen.shown");
@@ -314,65 +434,88 @@ impl Loading {
     }
     pub(super) fn finish(&mut self, mut loaded: Loaded) -> Result<Option<split::Split<'static>>> {
         let handoff_at = Instant::now();
+        let joins = startup::step("handoff.joins");
+        if let Some(loader) = self.glint_loader.take() {
+            loader
+                .join()
+                .map_err(|_| "item glint atlas loader panicked")?
+                .map_err(std::io::Error::other)?;
+        }
+        let mut renderer = self
+            .renderer_loader
+            .take()
+            .ok_or("world renderer was not prepared")?
+            .join()
+            .map_err(|_| "world renderer loader panicked")?
+            .map_err(std::io::Error::other)?;
+        drop(joins);
+        let gui = self.gui.take().ok_or("missing menu bundle")?;
+        // The renderer was built from a copy, so its reset of the font cache did not reach
+        // this one: glyphs the loading screen's texture held are placed into the world
+        // renderer's atlas texture again when the game draws them.
+        let font_reset = startup::step("handoff.font_reset");
+        gui.atlas.font.reset_cache();
+        drop(font_reset);
         let mut options = self.options.take().ok_or("loading already finished")?;
+        let window = self.window.take().ok_or("missing window")?;
         options.resources = loaded.root.clone();
         // StartupMenu owns world selection until it can hand it to Game.
         options.world = None;
         options.server = None;
-        let gui = self.gui.take().ok_or("missing menu bundle")?;
-        let window = self.window.clone().ok_or("window closed")?;
-        // Keep the loader's device and swap in the real textures in one step. The loading
-        // screen draws no frame after this: its atlas texture is freed before the world
-        // renderer uploads its own, so a phone never holds both (#15608).
         let mut previous = self.renderer.take();
+        let release = startup::step("handoff.release");
         if let Some(renderer) = &mut previous {
             renderer.release_surface();
             if let Some(atlas) = &renderer.hud.atlas_texture {
                 atlas.destroy();
             }
         }
+        drop(release);
+        // Tearing down the loading screen's device (and its pipelines) can take the driver a
+        // while; it happens on a thread of its own, beside the attach.
+        if let Some(previous) = previous.take()
+            && let Err(error) = std::thread::Builder::new()
+                .name("Old renderer".into())
+                .spawn(move || drop(previous))
+        {
+            log::warn!("Horizon: the old renderer could not be freed beside the handoff: {error}");
+        }
         let renderer_at = Instant::now();
-        let renderer = startup::time("renderer.world", || {
-            build_renderer(
-                window.clone(),
-                options.offscreen,
-                &loaded.pack,
-                &gui,
-                previous.as_ref(),
-                loaded.renderer_cpu,
-                self.settings.horizon.effective_api(),
-                self.settings.horizon.translucent_batching,
-                self.settings.vsync,
-                &self.settings.horizon,
-                shader_packs::picked_pack_shape(&self.settings),
-                previous
-                    .as_ref()
-                    .map(|r| r.display_reading())
-                    .unwrap_or_default(),
-                (
-                    self.settings.file.int("textureFiltering"),
-                    self.settings.file.int("maxAnisotropyBit"),
-                ),
-            )
-        })?;
+        if !options.offscreen {
+            let _attach_step = startup::step("renderer.attach_window");
+            renderer.attach_window()?;
+        }
         log::info!(
-            "Horizon: world renderer ready after {} ms",
-            self.started.elapsed().as_millis()
+            "Horizon: world renderer attached after {} ms",
+            renderer_at.elapsed().as_millis()
         );
         let renderer_ms = renderer_at.elapsed().as_millis();
-        // Audio is created on the main thread, after the core is ready.
-        let audio = if !options.execution_role.is_client() {
-            Audio::silent(&loaded.pack.source)
-        } else {
-            Audio::with_device(&loaded.pack.source, &self.settings.sound_device)
+        let (audio, language) = match self.startup_services.take() {
+            Some(loader) => {
+                let _step = startup::step("handoff.services_join");
+                loader
+                    .join()
+                    .map_err(|_| "startup services worker panicked")?
+            }
+            None => {
+                let audio = if !options.execution_role.is_client() {
+                    Audio::silent(&loaded.pack.source)
+                } else {
+                    Audio::with_device(&loaded.pack.source, &self.settings.sound_device)
+                };
+                // The menu read its language from the prepared root alone (`set_root`) and
+                // `load_resources` skips it on this path: read it again with the mods' layers,
+                // in the language picked in the menu.
+                let language = horizon_client::lang::Language::load(
+                    &[&loaded.pack.source],
+                    &horizon_client::lang::code(),
+                );
+                (audio, language)
+            }
         };
-        // The menu read its language from the prepared root alone (`set_root`) and
-        // `load_resources` skips it on this path: read it again with the mods' layers, in the
-        // language picked in the menu.
-        horizon_client::lang::set(horizon_client::lang::Language::load(
-            &[&loaded.pack.source],
-            &horizon_client::lang::code(),
-        ));
+        let lang = startup::step("handoff.lang");
+        horizon_client::lang::set(language);
+        drop(lang);
         let pack_error = loaded.pack_error.or_else(|| self.pack_error.take());
         // The game borrows its shared resources for the process's lifetime,
         // like the single copy an integrated server would share.
@@ -466,7 +609,16 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                match if loading.menu.reload_packs || !loading.ready_for_handoff() {
+                if let Err(error) = loading.start_renderer_loader() {
+                    loading.error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
+                match if loading.menu.reload_packs
+                    || !loading.ready_for_handoff()
+                    || !loading.glint_ready()
+                    || !loading.renderer_ready()
+                {
                     None
                 } else {
                     loading.loaded.take()

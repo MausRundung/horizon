@@ -120,6 +120,7 @@ fn fixture(window: Arc<Window>, out: &Path) -> Result<(), Box<dyn std::error::Er
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         true,
+        None,
         &white,
         16,
         16,

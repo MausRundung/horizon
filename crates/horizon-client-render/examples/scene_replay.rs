@@ -214,6 +214,7 @@ fn replay(window: Arc<Window>) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         true,
+        None,
         &pixels,
         render.sprite_size,
         render.sprite_minimum_size,

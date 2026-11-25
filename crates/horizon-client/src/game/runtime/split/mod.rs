@@ -368,6 +368,7 @@ impl<'a> Split<'a> {
         let built = build_renderer(
             window.clone(),
             true,
+            None,
             &self.host.pack,
             &self.host.gui,
             Some(&old),
@@ -453,6 +454,7 @@ impl<'a> Split<'a> {
         let built = build_renderer(
             window.clone(),
             self.offscreen,
+            None,
             &self.host.pack,
             &self.host.gui,
             Some(&old),

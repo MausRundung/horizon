@@ -1542,6 +1542,19 @@ impl AnimatedTickCache {
     }
 }
 
+/// What the window's surface offers, taken from the renderer that presents to it, so a
+/// renderer prepared beside that one picks the same swapchain format and HDR frame before
+/// it is attached.
+#[derive(Clone)]
+pub struct WindowOutput {
+    pub format: wgpu::TextureFormat,
+    pub usage: wgpu::TextureUsages,
+    pub present_mode: wgpu::PresentMode,
+    pub present_modes: Vec<wgpu::PresentMode>,
+    pub alpha_mode: wgpu::CompositeAlphaMode,
+    pub color_space: wgpu::SurfaceColorSpace,
+    pub hdr: Option<HdrOutput>,
+}
 pub struct Renderer {
     msaa: msaa::Msaa,
     instance: wgpu::Instance,
@@ -2630,6 +2643,9 @@ impl Renderer {
     pub async fn new(
         window: Arc<Window>,
         offscreen: bool,
+        // A renderer prepared beside the window's own: what its surface offers, so the
+        // frame and output come out as if the surface were made here.
+        prepared_for: Option<WindowOutput>,
         sprite_pixels: &[u8],
         sprite_size: u32,
         sprite_minimum_size: u32,
@@ -2735,6 +2751,27 @@ impl Renderer {
                 );
             }
             (config, caps.present_modes, hdr_output)
+        } else if let Some(prepared) = &prepared_for {
+            let config = wgpu::SurfaceConfiguration {
+                usage: prepared.usage,
+                format: prepared.format,
+                width: size.width.clamp(1, max_side),
+                height: size.height.clamp(1, max_side),
+                present_mode: prepared.present_mode,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: prepared.alpha_mode,
+                view_formats: vec![prepared.format.remove_srgb_suffix()],
+                color_space: prepared.color_space,
+            };
+            if previous.is_none() {
+                log::info!(
+                    "Horizon renderer: HDR output {}",
+                    prepared
+                        .hdr
+                        .map_or("not offered by this display", hdr::Output::name)
+                );
+            }
+            (config, prepared.present_modes.clone(), prepared.hdr)
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             let config = wgpu::SurfaceConfiguration {
@@ -2776,7 +2813,8 @@ impl Renderer {
             adapter.get_downlevel_capabilities().flags,
             adapter.get_texture_format_features(hud_coverage::FORMAT),
         );
-        let hdr_driver = surface.is_some().then(|| output::window_driver(&info));
+        let hdr_driver =
+            (surface.is_some() || prepared_for.is_some()).then(|| output::window_driver(&info));
         let output_caps = output::OutputCapabilities {
             hdr: hdr_output,
             float_frame: float_ok,
@@ -5268,6 +5306,11 @@ impl Renderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             self.surface.take().and_then(|s| Arc::try_unwrap(s).ok());
     }
+    /// Attach a renderer that was prepared offscreen to its window.
+    pub fn attach_window(&mut self) -> Result<()> {
+        self.offscreen = None;
+        self.recreate_surface()
+    }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
         self.queue.wait();
@@ -5287,15 +5330,21 @@ impl Renderer {
         self.surface = None;
         let surface = match spare {
             Some(surface) => surface,
-            None => self.instance.create_surface(self.window.clone())?,
+            None => {
+                let _step = crate::spans::startup::step("surface.create");
+                self.instance.create_surface(self.window.clone())?
+            }
         };
-        let configured = Self::configure(
-            &self.device,
-            &surface,
-            &self.surface_config(),
-            self.hdr.as_ref(),
-            &self.device_lost,
-        );
+        let configured = {
+            let _step = crate::spans::startup::step("surface.configure");
+            Self::configure(
+                &self.device,
+                &surface,
+                &self.surface_config(),
+                self.hdr.as_ref(),
+                &self.device_lost,
+            )
+        };
         if let Err(e) = &configured {
             log::warn!(
                 "Horizon renderer: the new window surface did not configure ({e}); retrying"
@@ -5303,6 +5352,7 @@ impl Renderer {
         }
         self.surface_unconfigured = configured.is_err();
         self.surface = Some(Arc::new(surface));
+        let _step = crate::spans::startup::step("surface.watch");
         self.surface_recreated();
         Ok(())
     }
@@ -6746,6 +6796,18 @@ impl Renderer {
     /// starts from it (`Renderer::new`'s `display`).
     pub fn display_reading(&self) -> output::DisplayReading {
         self.reading
+    }
+    /// What this renderer's window surface offers, for one prepared beside it.
+    pub fn window_output(&self) -> WindowOutput {
+        WindowOutput {
+            format: self.config.format,
+            usage: self.config.usage,
+            present_mode: self.config.present_mode,
+            present_modes: self.present_modes.clone(),
+            alpha_mode: self.config.alpha_mode,
+            color_space: self.config.color_space,
+            hdr: self.output_caps.hdr,
+        }
     }
     /// Whether HDR output is on: the setting, where the display offers it.
     pub fn hdr_on(&self) -> bool {

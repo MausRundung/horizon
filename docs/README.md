@@ -26,6 +26,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [horizon-ctl commands](horizon-ctl-commands.md): every command `horizon-ctl` takes, its CLI arguments, and the corresponding MCP tools for driving the game.
 - [Graphics](graphics.md): the graphics settings screen (pages, search, descriptions), the graphics benchmark and what it measured.
 - [Memory](memory.md): what holds the game's memory (`horizon-ctl memory`, the `alloc-census` heap census and its measured cost, resident memory in benchmark reports, heap profilers on probes).
+- [The startup handoff](startup-handoff.md): how the loading screen prepares the world renderer, the start's audio and language, and the item glint atlas on workers, what the handoff frame still does (attach the surface), why banded texture uploads poll instead of waiting, and how to trace it.
 - [HDR and render passes](hdr-passes.md): what a pass on the world's picture (upscaling, anti-aliasing, frame generation, post effects, captures) keeps so HDR works, and how to check it.
 - [Realms availability](realms-availability.md): vanilla's check that this client may use Realms, the five results, how a screen reads it (one `Pending`, kept), its caching, and how to test a consumer.
 - [Server against Pumpkin](performance/server-vs-pumpkin.md): Horizon's server and Pumpkin (Rust) under the same bots at 0, 20, 60 and 100 players: tick time, CPU, memory, chunks, join; where Horizon loses, and how to run it again.

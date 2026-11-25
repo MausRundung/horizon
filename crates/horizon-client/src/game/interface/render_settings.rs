@@ -32,6 +32,7 @@ impl Game<'_> {
         build_renderer(
             window,
             self.options.offscreen,
+            None,
             pack,
             gui,
             self.renderer.as_ref(),

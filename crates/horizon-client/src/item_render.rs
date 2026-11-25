@@ -683,6 +683,7 @@ pub struct ItemRenderer {
     /// without rules.
     pub cit: Option<cit::CitModels>,
     glint_atlas: Mutex<HashMap<String, Rect>>,
+    glint_atlas_key: Mutex<Option<(u32, i32, i32)>>,
 }
 
 /// Every `items/**/*.json` client item definition, by identifier. Through
@@ -725,12 +726,31 @@ fn glint_padding(filtering: i32, bit: i32) -> usize {
 impl ItemRenderer {
     /// Prepare GUI glint after the device exists; propagate packing failures to pack rollback.
     pub fn prepare_glint_atlas(&self, maximum: u32, filtering: (i32, i32)) -> crate::Result<()> {
+        let _step = crate::spans::startup::step("renderer.glint_atlas");
+        let key = (maximum, filtering.0, filtering.1);
+        {
+            let atlas = self
+                .glint_atlas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let prepared = self
+                .glint_atlas_key
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !atlas.is_empty() && *prepared == Some(key) {
+                return Ok(());
+            }
+        }
         let padding = glint_padding(filtering.0, filtering.1);
         let sprites = glint_atlas::load(&self.sprites.root, 1 << padding, maximum)?;
         *self
             .glint_atlas
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = sprites;
+        *self
+            .glint_atlas_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
         Ok(())
     }
 
@@ -843,6 +863,7 @@ impl ItemRenderer {
             .unwrap_or_default();
         Ok(Self {
             glint_atlas: Mutex::default(),
+            glint_atlas_key: Mutex::default(),
             item_ids,
             models,
             library,
